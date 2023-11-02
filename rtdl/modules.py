@@ -815,6 +815,7 @@ class MultiheadAttention(nn.Module):
         dropout: float,
         bias: bool,
         initialization: str,
+        rotary_emb: Optional[RotaryEmbedding] = None
     ) -> None:
         """
         Args:
@@ -841,6 +842,7 @@ class MultiheadAttention(nn.Module):
         self.W_out = nn.Linear(d_token, d_token, bias) if n_heads > 1 else None
         self.n_heads = n_heads
         self.dropout = nn.Dropout(dropout) if dropout else None
+        self.rotary_emb = rotary_emb
 
         for m in [self.W_q, self.W_k, self.W_v]:
             # the "xavier" branch tries to follow torch.nn.MultiheadAttention;
@@ -887,6 +889,8 @@ class MultiheadAttention(nn.Module):
             [key_compression, value_compression]
         ), 'If key_compression is (not) None, then value_compression must (not) be None'
         q, k, v = self.W_q(x_q), self.W_k(x_kv), self.W_v(x_kv)
+        if self.rotary_emb is not None:
+            q, k = map(self.rotary_emb.rotate_queries_or_keys, (q, k))
         for tensor in [q, k, v]:
             assert tensor.shape[-1] % self.n_heads == 0, _INTERNAL_ERROR_MESSAGE
         if key_compression is not None:
@@ -937,6 +941,7 @@ class Transformer(nn.Module):
             bias_second: bool,
             dropout: float,
             activation: ModuleType,
+            rotary_emb: Optional[RotaryEmbedding] = None
         ):
             super().__init__()
             self.linear_first = nn.Linear(
@@ -1071,6 +1076,7 @@ class Transformer(nn.Module):
                         dropout=attention_dropout,
                         bias=True,
                         initialization=attention_initialization,
+                        rotary_emb=self.rotary_emb
                     ),
                     'ffn': Transformer.FFN(
                         d_token=d_token,
@@ -1237,6 +1243,7 @@ class FTTransformer(nn.Module):
                 'in the first transformer block'
             )
         self.feature_tokenizer = feature_tokenizer
+        self.rotary_emb = RotaryEmbedding(feature_tokenizer.d_token)
         self.cls_token = CLSToken(
             feature_tokenizer.d_token, feature_tokenizer.initialization
         )
@@ -1483,6 +1490,8 @@ class FTTransformer(nn.Module):
 
     def forward(self, x_num: Optional[Tensor], x_cat: Optional[Tensor]) -> Tensor:
         x = self.feature_tokenizer(x_num, x_cat)
+        if self.rotary_emb is not None:
+            x = self.rotary_emb(x)
         x = self.cls_token(x)
         x = self.transformer(x)
         return x
